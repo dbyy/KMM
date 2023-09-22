@@ -52,26 +52,44 @@
     </widget>
    </item>
    <item>
-    <layout class="QHBoxLayout" name="horizontalLayout">
+    <layout class="QHBoxLayout" name="horizontalLayout_3">
      <item>
-      <widget class="QLabel" name="label_2">
-       <property name="text">
-        <string comment="@label:chooser Date">From</string>
-       </property>
+      <widget class="QWidget" name="m_dateContainer" native="true">
+       <layout class="QHBoxLayout" name="horizontalLayout">
+        <property name="leftMargin">
+         <number>0</number>
+        </property>
+        <property name="topMargin">
+         <number>0</number>
+        </property>
+        <property name="rightMargin">
+         <number>0</number>
+        </property>
+        <property name="bottomMargin">
+         <number>0</number>
+        </property>
+        <item>
+         <widget class="QLabel" name="m_fromLabel">
+          <property name="text">
+           <string comment="@label:chooser Date">From</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="KMyMoneyDateEdit" name="m_fromDate"/>
+        </item>
+        <item>
+         <widget class="QLabel" name="m_toLabel">
+          <property name="text">
+           <string comment="@label:chooser Date">To</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="KMyMoneyDateEdit" name="m_toDate"/>
+        </item>
+       </layout>
       </widget>
-     </item>
-     <item>
-      <widget class="KMyMoneyDateEdit" name="m_fromDate"/>
-     </item>
-     <item>
-      <widget class="QLabel" name="label">
-       <property name="text">
-        <string comment="@label:chooser Date">To</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="KMyMoneyDateEdit" name="m_toDate"/>
      </item>
      <item>
       <spacer name="horizontalSpacer_2">

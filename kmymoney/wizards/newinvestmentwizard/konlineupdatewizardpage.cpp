@@ -13,16 +13,19 @@
 // ----------------------------------------------------------------------------
 // KDE Includes
 
+#include <KLazyLocalizedString>
+#include <KSharedConfig>
 
 // ----------------------------------------------------------------------------
 // Project Includes
 
 #include "ui_konlineupdatewizardpage.h"
 
+#include <alkimia/alkonlinequotesprofile.h>
+#include <alkimia/alkonlinequotesprofilemanager.h>
+
 #include "mymoneymoney.h"
 #include "mymoneysecurity.h"
-/// @todo AlkOnlineQuote remove following include when ported to Alkimia
-#include "webpricequote.h"
 
 KOnlineUpdateWizardPage::KOnlineUpdateWizardPage(QWidget *parent) :
     QWizardPage(parent),
@@ -31,6 +34,60 @@ KOnlineUpdateWizardPage::KOnlineUpdateWizardPage(QWidget *parent) :
     ui->setupUi(this);
     ui->m_onlineFactor->setPrecision(4);
     ui->m_onlineFactor->setValue(MyMoneyMoney::ONE);
+
+    // load the available online profiles
+    AlkOnlineQuotesProfileManager& manager = AlkOnlineQuotesProfileManager::instance();
+    // create the quoteprofile and make sure it uses our idea of the configuration
+    struct OnlineProfileConfig {
+        AlkOnlineQuotesProfile::Type type;
+        bool checkSupport;
+        const char* name;
+        const char* ghnsName;
+        QWidget* widget;
+        KLazyLocalizedString installedTooltip;
+        KLazyLocalizedString functionalTooltip;
+    };
+    struct OnlineProfileConfig onlineProfileList[] = {
+        {AlkOnlineQuotesProfile::Type::KMyMoney5, false, "kmymoney5", "kmymoney-quotes.knsrc", nullptr, kli18n(""), kli18n("")},
+        {
+            AlkOnlineQuotesProfile::Type::Script,
+            true,
+            "Finance::Quote",
+            "",
+            ui->m_useFinanceQuote,
+            kli18nc("@info:tooltip", "Finance::Quote not supported by the installed Alkimia library."),
+            kli18nc("@info:tooltip", "Missing or non-functioning Finance::Quote installation."),
+        }};
+
+    for (const auto& onlineProfile : onlineProfileList) {
+        auto quoteProfile = manager.profile(onlineProfile.name);
+        if (!quoteProfile) {
+            auto disableProfile = [&](const KLazyLocalizedString& tooltip) {
+                delete quoteProfile;
+                quoteProfile = nullptr;
+                if (onlineProfile.widget) {
+                    onlineProfile.widget->setToolTip(tooltip.toString());
+                    onlineProfile.widget->setDisabled(true);
+                }
+            };
+
+            // create the quoteprofile and make sure it uses our idea of the configuration
+            quoteProfile = new AlkOnlineQuotesProfile(QString(onlineProfile.name), onlineProfile.type, onlineProfile.ghnsName);
+
+            if (!quoteProfile->typeIsSupported()) {
+                disableProfile(onlineProfile.installedTooltip);
+            }
+            if (quoteProfile) {
+                if (quoteProfile->typeIsOperational()) {
+                    quoteProfile->setKConfig(KSharedConfig::openConfig());
+                    // add profile to manager
+                    manager.addProfile(quoteProfile);
+                } else {
+                    disableProfile(onlineProfile.functionalTooltip);
+                }
+            }
+        }
+    }
 
     // make ui->m_onlineSourceCombo sortable
     QSortFilterProxyModel* proxy = new QSortFilterProxyModel(ui->m_onlineSourceCombo);
@@ -70,18 +127,20 @@ KOnlineUpdateWizardPage::~KOnlineUpdateWizardPage()
  */
 void KOnlineUpdateWizardPage::init2(const MyMoneySecurity& security)
 {
-    int idx;
-    if (security.value("kmm-online-quote-system") == "Finance::Quote") {
-        FinanceQuoteProcess p;
-        ui->m_useFinanceQuote->setChecked(true);
-        idx = ui->m_onlineSourceCombo->findText(p.niceName(security.value("kmm-online-source")));
-    } else {
+    const auto onlineQuoteProfileName = security.value(QLatin1String("kmm-online-quote-system"), QLatin1String("kmymoney5"));
+
+    AlkOnlineQuotesProfileManager& manager = AlkOnlineQuotesProfileManager::instance();
+    AlkOnlineQuotesProfile* onlineQuoteProfile;
+    onlineQuoteProfile = manager.profile(onlineQuoteProfileName);
+    int idx = -1;
+    if (onlineQuoteProfile) {
+        ui->m_useFinanceQuote->setChecked(onlineQuoteProfile->type() == AlkOnlineQuotesProfile::Type::Script);
         idx = ui->m_onlineSourceCombo->findText(security.value("kmm-online-source"));
     }
-
     // in case we did not find the entry, we use the empty one
-    if (idx == -1)
+    if (idx == -1) {
         idx = ui->m_onlineSourceCombo->findText(QString());
+    }
     ui->m_onlineSourceCombo->setCurrentIndex(idx);
 
     if (!security.value("kmm-online-factor").isEmpty())
@@ -111,10 +170,14 @@ void KOnlineUpdateWizardPage::slotSourceChanged(bool useFQ)
 {
     ui->m_onlineSourceCombo->clear();
     ui->m_onlineSourceCombo->insertItem(0, QString());
-    if (useFQ) {
-        ui->m_onlineSourceCombo->addItems(WebPriceQuote::quoteSources(WebPriceQuote::FinanceQuote));
-    } else {
-        ui->m_onlineSourceCombo->addItems(WebPriceQuote::quoteSources());
+
+    AlkOnlineQuotesProfileManager& manager = AlkOnlineQuotesProfileManager::instance();
+    // create the quoteprofile and make sure it uses our idea of the configuration
+    AlkOnlineQuotesProfile* quoteProfile = manager.profile(useFQ ? QLatin1String("Finance::Quote") : QLatin1String("kmymoney5"));
+
+    if (quoteProfile) {
+        ui->m_onlineSourceCombo->addItems(quoteProfile->quoteSources());
     }
+    ui->m_onlineSourceCombo->setEnabled(quoteProfile != nullptr);
     ui->m_onlineSourceCombo->model()->sort(0);
 }

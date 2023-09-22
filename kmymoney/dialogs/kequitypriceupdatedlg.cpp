@@ -34,6 +34,10 @@
 
 #include "ui_kequitypriceupdatedlg.h"
 
+#include <alkimia/alkonlinequote.h>
+#include <alkimia/alkonlinequotesource.h>
+#include <alkimia/alkonlinequotesprofilemanager.h>
+
 #include "dialogenums.h"
 #include "icons.h"
 #include "kequitypriceupdateconfdlg.h"
@@ -45,8 +49,6 @@
 #include "mymoneyprice.h"
 #include "mymoneysecurity.h"
 #include "mymoneystatement.h"
-/// @todo AlkOnlineQuote remove following include when ported to Alkimia
-#include "webpricequote.h"
 #include "widgethintframe.h"
 
 #include "kmmyesno.h"
@@ -58,19 +60,43 @@
 #define KMMID_COL       4
 #define SOURCE_COL      5
 
-class KEquityPriceUpdateDlgPrivate
+class KEquityPriceUpdateDlgPrivate : public QObject
 {
+    Q_OBJECT
     Q_DISABLE_COPY(KEquityPriceUpdateDlgPrivate)
     Q_DECLARE_PUBLIC(KEquityPriceUpdateDlg)
 
 public:
     explicit KEquityPriceUpdateDlgPrivate(KEquityPriceUpdateDlg* qq)
-        : q_ptr(qq)
+        : QObject(qq)
+        , q_ptr(qq)
         , ui(new Ui::KEquityPriceUpdateDlg)
         , m_fUpdateAll(false)
+        , m_abortUpdate(false)
         , m_updatingPricePolicy(eDialogs::UpdatePrice::All)
         , m_splitRegex("([0-9a-z\\.]+)[^a-z0-9]+([0-9a-z\\.]+)", QRegularExpression::CaseInsensitiveOption)
+        , m_currentItem(nullptr)
     {
+        auto& manager = AlkOnlineQuotesProfileManager::instance();
+
+        struct OnlineProfileConfig {
+            AlkOnlineQuotesProfile::Type type;
+            const char* name;
+            const char* ghnsName;
+        };
+        struct OnlineProfileConfig onlineProfileList[] = {
+            {AlkOnlineQuotesProfile::Type::KMyMoney5, "kmymoney5", "kmymoney-quotes.knsrc"},
+            {AlkOnlineQuotesProfile::Type::Script, "Finance::Quote", ""},
+        };
+
+        for (const auto& onlineProfile : onlineProfileList) {
+            auto quoteProfile = manager.profile(onlineProfile.name);
+            if (!quoteProfile) {
+                // create the quoteprofile and make sure it uses our idea of the configuration
+                quoteProfile = new AlkOnlineQuotesProfile(QString(onlineProfile.name), onlineProfile.type, onlineProfile.ghnsName);
+                manager.addProfile(quoteProfile);
+            }
+        }
     }
 
     ~KEquityPriceUpdateDlgPrivate()
@@ -78,10 +104,25 @@ public:
         delete ui;
     }
 
+    AlkOnlineQuotesProfile* quoteProfile(const QString& profileName)
+    {
+        auto& manager = AlkOnlineQuotesProfileManager::instance();
+        if (profileName.isEmpty()) {
+            return manager.profile(QLatin1String("kmymoney5"));
+        }
+        return manager.profile(profileName);
+    }
+
     void init(const QString& securityId)
     {
         Q_Q(KEquityPriceUpdateDlg);
         ui->setupUi(q);
+
+        // as long as we don't support the CSV import of prices
+        // for a period of multiple days, we simply don't show the
+        // date entry widgets.
+        ui->m_dateContainer->hide();
+
         m_fUpdateAll = false;
         QStringList headerList;
         headerList << i18n("ID") << i18nc("Equity name", "Name")
@@ -101,7 +142,7 @@ public:
         ui->lvEquityList->setAllColumnsShowFocus(true);
 
         ui->closeStatusButton->setIcon(Icons::get(Icons::Icon::DialogClose));
-        q->connect(ui->closeStatusButton, &QToolButton::clicked, ui->statusContainer, &QWidget::hide);
+        connect(ui->closeStatusButton, &QToolButton::clicked, ui->statusContainer, &QWidget::hide);
 
         // hide the status widgets until there is activity
         ui->statusContainer->hide();
@@ -113,7 +154,7 @@ public:
         //
 
         // send in securityId == "XXX YYY" to get a single-shot update for XXX to YYY.
-        // for consistency reasons, this accepts the same delimiters as WebPriceQuote::launch()
+        // for consistency reasons, this accepts the same delimiters as AlkOnlineQuote::launch()
         QRegularExpressionMatch match(m_splitRegex.match(securityId));
         MyMoneySecurityPair currencyIds;
         if (match.hasMatch()) {
@@ -158,29 +199,35 @@ public:
             addPricePair(currencyIds, true);
         }
 
-        q->connect(ui->btnUpdateSelected, &QAbstractButton::clicked, q, &KEquityPriceUpdateDlg::slotUpdateSelectedClicked);
-        q->connect(ui->btnUpdateAll, &QAbstractButton::clicked, q, &KEquityPriceUpdateDlg::slotUpdateAllClicked);
+        connect(ui->btnUpdateSelected, &QAbstractButton::clicked, this, &KEquityPriceUpdateDlgPrivate::slotUpdateSelected);
+        connect(ui->btnUpdateAll, &QAbstractButton::clicked, this, &KEquityPriceUpdateDlgPrivate::slotUpdateAll);
 
-        q->connect(ui->m_fromDate, &KMyMoneyDateEdit::dateChanged, q, &KEquityPriceUpdateDlg::slotDateChanged);
-        q->connect(ui->m_toDate, &KMyMoneyDateEdit::dateChanged, q, &KEquityPriceUpdateDlg::slotDateChanged);
+        connect(ui->m_fromDate, &KMyMoneyDateEdit::dateChanged, this, &KEquityPriceUpdateDlgPrivate::slotDateChanged);
+        connect(ui->m_toDate, &KMyMoneyDateEdit::dateChanged, this, &KEquityPriceUpdateDlgPrivate::slotDateChanged);
 
-        q->connect(&m_webQuote, &WebPriceQuote::csvquote, q, &KEquityPriceUpdateDlg::slotReceivedCSVQuote);
-        q->connect(&m_webQuote, &WebPriceQuote::quote, q, &KEquityPriceUpdateDlg::slotReceivedQuote);
-        q->connect(&m_webQuote, &WebPriceQuote::failed, q, &KEquityPriceUpdateDlg::slotQuoteFailed);
-        q->connect(&m_webQuote, &WebPriceQuote::status, q, &KEquityPriceUpdateDlg::logStatusMessage);
-        q->connect(&m_webQuote, &WebPriceQuote::error, q, &KEquityPriceUpdateDlg::logErrorMessage);
+        connect(&m_quote, &AlkOnlineQuote::status, this, &KEquityPriceUpdateDlgPrivate::logStatusMessage);
+        connect(&m_quote, &AlkOnlineQuote::error, this, &KEquityPriceUpdateDlgPrivate::logErrorMessage);
+        connect(&m_quote, &AlkOnlineQuote::failed, this, &KEquityPriceUpdateDlgPrivate::slotQuoteFailed);
+        connect(&m_quote, &AlkOnlineQuote::quote, this, &KEquityPriceUpdateDlgPrivate::slotReceivedQuote);
 
-        q->connect(ui->lvEquityList, &QTreeWidget::itemSelectionChanged, q, &KEquityPriceUpdateDlg::slotUpdateSelection);
+        connect(ui->lvEquityList, &QTreeWidget::itemSelectionChanged, this, [&]() {
+            updateButtonState();
+        });
 
         ui->buttonBox->button(QDialogButtonBox::RestoreDefaults)->setText(i18nc("@action:button Configuration of price update", "Configure"));
-        q->connect(ui->buttonBox->button(QDialogButtonBox::RestoreDefaults), &QAbstractButton::clicked, q, &KEquityPriceUpdateDlg::slotConfigureClicked);
+        connect(ui->buttonBox->button(QDialogButtonBox::RestoreDefaults), &QAbstractButton::clicked, this, [&]() {
+            QPointer<EquityPriceUpdateConfDlg> dlg = new EquityPriceUpdateConfDlg(m_updatingPricePolicy);
+            if (dlg->exec() == QDialog::Accepted && (dlg != nullptr)) {
+                m_updatingPricePolicy = dlg->policy();
+            }
+            delete dlg;
+        });
 
         if (!securityId.isEmpty()) {
             ui->btnUpdateSelected->hide();
             ui->btnUpdateAll->hide();
-            // delete layout1;
 
-            QTimer::singleShot(100, q, SLOT(slotUpdateAllClicked()));
+            QTimer::singleShot(100, this, &KEquityPriceUpdateDlgPrivate::slotUpdateAll);
         }
 
         // Hide OK button until we have received the first update
@@ -292,13 +339,15 @@ public:
             // if it is in use, it_a is not equal to list.end()
             if (it_a != list.constEnd()) {
                 QString webID;
-                WebPriceQuoteSource onlineSource(inv.value("kmm-online-source"));
-                if (onlineSource.m_webIDBy == WebPriceQuoteSource::identifyBy::IdentificationNumber)
+                AlkOnlineQuoteSource alkOnlineSource(inv.value(QLatin1String("kmm-online-source")),
+                                                     quoteProfile(inv.value(QLatin1String("kmm-online-quote-system"))));
+                if (alkOnlineSource.idSelector() == AlkOnlineQuoteSource::IdentificationNumber) {
                     webID = inv.value("kmm-security-id");   // insert ISIN number...
-                else if (onlineSource.m_webIDBy == WebPriceQuoteSource::identifyBy::Name)
+                } else if (alkOnlineSource.idSelector() == AlkOnlineQuoteSource::Name) {
                     webID = inv.name();                     // ...or name...
-                else
+                } else {
                     webID = inv.tradingSymbol();            // ...or symbol
+                }
 
                 QTreeWidgetItem* item = new QTreeWidgetItem();
                 item->setForeground(WEBID_COL, KColorScheme(QPalette::Normal).foreground(KColorScheme::NormalText));
@@ -332,12 +381,195 @@ public:
         }
     }
 
+    void slotDateChanged()
+    {
+        QSignalBlocker blockFrom(ui->m_fromDate);
+        QSignalBlocker blockTo(ui->m_toDate);
+        if (ui->m_toDate->date() > QDate::currentDate())
+            ui->m_toDate->setDate(QDate::currentDate());
+        if (ui->m_fromDate->date() > ui->m_toDate->date())
+            ui->m_fromDate->setDate(ui->m_toDate->date());
+    }
+
+    void slotUpdateSelected()
+    {
+        Q_Q(KEquityPriceUpdateDlg);
+        // disable sorting while the update is running to maintain the current order of items on which
+        // the update process depends and which could be changed with sorting enabled due to the updated values
+        ui->lvEquityList->setSortingEnabled(false);
+
+        // show the status widgets
+        ui->statusContainer->show();
+        ui->prgOnlineProgress->show();
+
+        ui->prgOnlineProgress->setMaximum(1 + ui->lvEquityList->model()->rowCount());
+
+        QTreeWidgetItemIterator it(ui->lvEquityList);
+        int processed(1);
+        bool noneProcessed(true);
+
+        const QString fqName = QLatin1String("Finance::Quote");
+
+        while (*it && !m_abortUpdate) {
+            ui->prgOnlineProgress->setValue(processed);
+            if ((*it)->isSelected() || m_fUpdateAll) {
+                noneProcessed = false;
+                m_currentItem = (*it);
+                const auto profileName = m_currentItem->text(SOURCE_COL).startsWith(fqName) ? fqName : QString();
+                m_quote.setProfile(quoteProfile(profileName));
+                m_quote.launch((*it)->text(WEBID_COL), (*it)->text(KMMID_COL), (*it)->text(SOURCE_COL));
+            }
+            ++it;
+            ++processed;
+        }
+
+        // we've run past the end, reset to the default value.
+        m_fUpdateAll = false;
+
+        // force progress bar to show 100% and hide it after a while
+        ui->prgOnlineProgress->setValue(ui->prgOnlineProgress->maximum());
+        QTimer::singleShot(500, ui->prgOnlineProgress, &QProgressBar::hide);
+
+        // re-enable the sorting that was disabled during the update process
+        ui->lvEquityList->setSortingEnabled(true);
+
+        if (noneProcessed) {
+            logErrorMessage(i18nc("@info online update price info", "No security selected."));
+        }
+    }
+
+    void slotUpdateAll()
+    {
+        Q_Q(KEquityPriceUpdateDlg);
+        if (ui->lvEquityList->model()->rowCount() > 0) {
+            m_fUpdateAll = true;
+            slotUpdateSelected();
+        } else {
+            logErrorMessage(i18nc("@info online update price info", "No Security to be updated."));
+        }
+    }
+
+    void logErrorMessage(const QString& message)
+    {
+        logStatusMessage(QString("<font color=\"red\"><b>") + message + QString("</b></font>"));
+    }
+
+    void logStatusMessage(const QString& message)
+    {
+        ui->lbStatus->append(message);
+    }
+
+    void slotQuoteFailed(const QString& _kmmID, const QString& _webID)
+    {
+        Q_Q(KEquityPriceUpdateDlg);
+        // Give the user some options
+        int result;
+        if (m_currentItem) {
+            if (_kmmID.contains(" ")) {
+                result = KMessageBox::warningContinueCancel(
+                    q,
+                    i18n("Failed to retrieve an exchange rate for %1 from %2. It will be skipped this time.", _webID, m_currentItem->text(SOURCE_COL)),
+                    i18n("Price Update Failed"));
+            } else {
+                result = KMessageBox::questionTwoActionsCancel(
+                    q,
+                    QString::fromLatin1("<qt>%1</qt>")
+                        .arg(i18n(
+                            "Failed to retrieve a quote for %1 from %2.  Press <b>No</b> to remove the online price source from this security permanently, "
+                            "<b>Yes</b> to continue updating this security during future price updates or <b>Cancel</b> to stop the current update operation.",
+                            _webID,
+                            m_currentItem->text(SOURCE_COL))),
+                    i18n("Price Update Failed"),
+                    KMMYesNo::yes(),
+                    KMMYesNo::no());
+            }
+
+            if (result == KMessageBox::SecondaryAction) {
+                // Disable price updates for this security
+
+                MyMoneyFileTransaction ft;
+                try {
+                    // Get this security (by ID)
+                    MyMoneySecurity security = MyMoneyFile::instance()->security(_kmmID.toUtf8());
+
+                    // Set the quote source to blank
+                    security.setValue("kmm-online-source", QString());
+                    security.setValue("kmm-online-quote-system", QString());
+
+                    // Re-commit the security
+                    MyMoneyFile::instance()->modifySecurity(security);
+                    ft.commit();
+                } catch (const MyMoneyException& e) {
+                    KMessageBox::error(q,
+                                       QString("<qt>") + i18n("Cannot update security <b>%1</b>: %2", _webID, QString::fromLatin1(e.what())) + QString("</qt>"),
+                                       i18n("Price Update Failed"));
+                }
+            }
+
+            // As long as the user doesn't want to cancel, move on!
+            m_abortUpdate = (result == KMessageBox::Cancel);
+        }
+    }
+
+    void slotReceivedQuote(const QString& _kmmID, const QString& _webID, const QDate& _date, const double& _price)
+    {
+        Q_Q(KEquityPriceUpdateDlg);
+        if (m_currentItem) {
+            if (_price > 0.0f && _date.isValid()) {
+                QDate date = _date;
+                if (date > QDate::currentDate())
+                    date = QDate::currentDate();
+
+                MyMoneyMoney price = MyMoneyMoney::ONE;
+                QString id = _kmmID.toUtf8();
+                MyMoneySecurity fromCurrency, toCurrency;
+                if (_kmmID.contains(" ") == 0) {
+                    MyMoneySecurity security = MyMoneyFile::instance()->security(id);
+                    QString factor = security.value("kmm-online-factor");
+                    if (!factor.isEmpty()) {
+                        price = price * MyMoneyMoney(factor);
+                    }
+                    try {
+                        toCurrency = MyMoneyFile::instance()->security(id);
+                        fromCurrency = MyMoneyFile::instance()->security(toCurrency.tradingCurrency());
+                    } catch (const MyMoneyException&) {
+                        fromCurrency = toCurrency = MyMoneySecurity();
+                    }
+
+                } else {
+                    QRegularExpressionMatch match(m_splitRegex.match(_kmmID));
+                    if (match.hasMatch()) {
+                        try {
+                            fromCurrency = MyMoneyFile::instance()->security(match.captured(2).toUtf8());
+                            toCurrency = MyMoneyFile::instance()->security(match.captured(1).toUtf8());
+                        } catch (const MyMoneyException&) {
+                            fromCurrency = toCurrency = MyMoneySecurity();
+                        }
+                    }
+                }
+                price *= MyMoneyMoney(_price, MyMoneyMoney::precToDenom(toCurrency.pricePrecision()));
+
+                m_currentItem->setText(PRICE_COL, price.formatMoney(fromCurrency.tradingSymbol(), toCurrency.pricePrecision()));
+                m_currentItem->setText(DATE_COL, date.toString(Qt::ISODate));
+                logStatusMessage(i18nc("@info Online price update %1 online id, %2 internal id", "Price for %1 updated (id %2)", _webID, _kmmID));
+                // make sure to make OK button available
+                ui->buttonBox->button(QDialogButtonBox::Ok)->setEnabled(true);
+            } else {
+                logErrorMessage(i18nc("@info Online price update %1 online id", "Received an invalid price for %1, unable to update.", _webID));
+            }
+
+            m_currentItem->setSelected(false);
+        }
+    }
+
     KEquityPriceUpdateDlg* q_ptr;
     Ui::KEquityPriceUpdateDlg* ui;
     bool m_fUpdateAll;
+    bool m_abortUpdate;
     eDialogs::UpdatePrice m_updatingPricePolicy;
-    WebPriceQuote m_webQuote;
     QRegularExpression m_splitRegex;
+    AlkOnlineQuote m_quote;
+    QTreeWidgetItem* m_currentItem;
 };
 
 KEquityPriceUpdateDlg::KEquityPriceUpdateDlg(QWidget *parent, const QString& securityId) :
@@ -382,28 +614,14 @@ KEquityPriceUpdateDlg::~KEquityPriceUpdateDlg()
     delete d;
 }
 
-void KEquityPriceUpdateDlg::logErrorMessage(const QString& message)
-{
-    logStatusMessage(QString("<font color=\"red\"><b>") + message + QString("</b></font>"));
-}
-
-void KEquityPriceUpdateDlg::logStatusMessage(const QString& message)
-{
-    Q_D(KEquityPriceUpdateDlg);
-    d->ui->lbStatus->append(message);
-}
-
 MyMoneyPrice KEquityPriceUpdateDlg::price(const QString& id) const
 {
     Q_D(const KEquityPriceUpdateDlg);
     MyMoneyPrice price;
-    QTreeWidgetItem* item = nullptr;
     QList<QTreeWidgetItem*> foundItems = d->ui->lvEquityList->findItems(id, Qt::MatchExactly, KMMID_COL);
 
-    if (! foundItems.empty())
-        item = foundItems.at(0);
-
-    if (item) {
+    if (!foundItems.empty()) {
+        const auto* const item = foundItems.at(0);
         MyMoneyMoney rate(item->text(PRICE_COL));
         if (!rate.isZero()) {
             QString kmm_id = item->text(KMMID_COL).toUtf8();
@@ -471,160 +689,7 @@ void KEquityPriceUpdateDlg::storePrices()
     }
 }
 
-void KEquityPriceUpdateDlg::slotConfigureClicked()
-{
-    Q_D(KEquityPriceUpdateDlg);
-    QPointer<EquityPriceUpdateConfDlg> dlg = new EquityPriceUpdateConfDlg(d->m_updatingPricePolicy);
-    if (dlg->exec() == QDialog::Accepted)
-        d->m_updatingPricePolicy = dlg->policy();
-    delete dlg;
-}
-
-void KEquityPriceUpdateDlg::slotUpdateSelection()
-{
-    Q_D(KEquityPriceUpdateDlg);
-    d->updateButtonState();
-}
-
-void KEquityPriceUpdateDlg::slotUpdateSelectedClicked()
-{
-    Q_D(KEquityPriceUpdateDlg);
-    // disable sorting while the update is running to maintain the current order of items on which
-    // the update process depends and which could be changed with sorting enabled due to the updated values
-    d->ui->lvEquityList->setSortingEnabled(false);
-
-    // show the status widgets
-    d->ui->statusContainer->show();
-    d->ui->prgOnlineProgress->show();
-
-    auto item = d->ui->lvEquityList->invisibleRootItem()->child(0);
-    auto skipCnt = 1;
-    while (item && !item->isSelected()) {
-        item = d->ui->lvEquityList->invisibleRootItem()->child(skipCnt);
-        ++skipCnt;
-    }
-    d->m_webQuote.setDate(d->ui->m_fromDate->date(), d->ui->m_toDate->date());
-    if (item) {
-        d->ui->prgOnlineProgress->setMaximum(1 + d->ui->lvEquityList->invisibleRootItem()->childCount());
-        d->ui->prgOnlineProgress->setValue(skipCnt);
-        d->m_webQuote.launch(item->text(WEBID_COL), item->text(KMMID_COL), item->text(SOURCE_COL));
-
-    } else {
-
-        logErrorMessage("No security selected.");
-    }
-}
-
-void KEquityPriceUpdateDlg::slotUpdateAllClicked()
-{
-    Q_D(KEquityPriceUpdateDlg);
-    // disable sorting while the update is running to maintain the current order of items on which
-    // the update process depends and which could be changed with sorting enabled due to the updated values
-    d->ui->lvEquityList->setSortingEnabled(false);
-
-    // show the status widgets
-    d->ui->statusContainer->show();
-    d->ui->prgOnlineProgress->show();
-
-    QTreeWidgetItem* item = d->ui->lvEquityList->invisibleRootItem()->child(0);
-    if (item) {
-        d->ui->prgOnlineProgress->setMaximum(1 + d->ui->lvEquityList->invisibleRootItem()->childCount());
-        d->ui->prgOnlineProgress->setValue(1);
-        d->m_fUpdateAll = true;
-        d->m_webQuote.launch(item->text(WEBID_COL), item->text(KMMID_COL), item->text(SOURCE_COL));
-
-    } else {
-        logErrorMessage("Security list is empty.");
-    }
-}
-
-void KEquityPriceUpdateDlg::slotDateChanged()
-{
-    Q_D(KEquityPriceUpdateDlg);
-    QSignalBlocker blockFrom(d->ui->m_fromDate);
-    QSignalBlocker blockTo(d->ui->m_toDate);
-    if (d->ui->m_toDate->date() > QDate::currentDate())
-        d->ui->m_toDate->setDate(QDate::currentDate());
-    if (d->ui->m_fromDate->date() > d->ui->m_toDate->date())
-        d->ui->m_fromDate->setDate(d->ui->m_toDate->date());
-}
-
-void KEquityPriceUpdateDlg::slotQuoteFailed(const QString& _kmmID, const QString& _webID)
-{
-    Q_D(KEquityPriceUpdateDlg);
-    auto foundItems = d->ui->lvEquityList->findItems(_kmmID, Qt::MatchExactly, KMMID_COL);
-    QTreeWidgetItem* item = nullptr;
-
-    if (! foundItems.empty())
-        item = foundItems.at(0);
-
-    // Give the user some options
-    int result;
-    if (_kmmID.contains(" ")) {
-        if (item)
-            result = KMessageBox::warningContinueCancel(this, i18n("Failed to retrieve an exchange rate for %1 from %2. It will be skipped this time.", _webID, item->text(SOURCE_COL)), i18n("Price Update Failed"));
-        else
-            return;
-    } else if (!item) {
-        return;
-    } else {
-        result = KMessageBox::questionTwoActionsCancel(
-            this,
-            QString::fromLatin1("<qt>%1</qt>")
-                .arg(i18n("Failed to retrieve a quote for %1 from %2.  Press <b>No</b> to remove the online price source from this security permanently, "
-                          "<b>Yes</b> to continue updating this security during future price updates or <b>Cancel</b> to stop the current update operation.",
-                          _webID,
-                          item->text(SOURCE_COL))),
-            i18n("Price Update Failed"),
-            KMMYesNo::yes(),
-            KMMYesNo::no());
-    }
-
-    if (result == KMessageBox::SecondaryAction) {
-        // Disable price updates for this security
-
-        MyMoneyFileTransaction ft;
-        try {
-            // Get this security (by ID)
-            MyMoneySecurity security = MyMoneyFile::instance()->security(_kmmID.toUtf8());
-
-            // Set the quote source to blank
-            security.setValue("kmm-online-source", QString());
-            security.setValue("kmm-online-quote-system", QString());
-
-            // Re-commit the security
-            MyMoneyFile::instance()->modifySecurity(security);
-            ft.commit();
-        } catch (const MyMoneyException &e) {
-            KMessageBox::error(this, QString("<qt>") + i18n("Cannot update security <b>%1</b>: %2", _webID, QString::fromLatin1(e.what())) + QString("</qt>"), i18n("Price Update Failed"));
-        }
-    }
-
-    // As long as the user doesn't want to cancel, move on!
-    if (result != KMessageBox::Cancel) {
-        QTreeWidgetItem* next = nullptr;
-        d->ui->prgOnlineProgress->setValue(d->ui->prgOnlineProgress->value() + 1);
-        item->setSelected(false);
-
-        // launch the NEXT one ... in case of m_fUpdateAll == false, we
-        // need to parse the list to find the next selected one
-        next = d->ui->lvEquityList->invisibleRootItem()->child(d->ui->lvEquityList->invisibleRootItem()->indexOfChild(item) + 1);
-        if (!d->m_fUpdateAll) {
-            while (next && !next->isSelected()) {
-                d->ui->prgOnlineProgress->setValue(d->ui->prgOnlineProgress->value() + 1);
-                next = d->ui->lvEquityList->invisibleRootItem()->child(d->ui->lvEquityList->invisibleRootItem()->indexOfChild(next) + 1);
-            }
-        }
-        if (next) {
-            d->m_webQuote.launch(next->text(WEBID_COL), next->text(KMMID_COL), next->text(SOURCE_COL));
-        } else {
-            finishUpdate();
-        }
-    } else {
-        finishUpdate();
-    }
-}
-
+#if 0
 void KEquityPriceUpdateDlg::slotReceivedCSVQuote(const QString& _kmmID, const QString& _webID, MyMoneyStatement& st)
 {
     Q_D(KEquityPriceUpdateDlg);
@@ -770,103 +835,12 @@ void KEquityPriceUpdateDlg::slotReceivedCSVQuote(const QString& _kmmID, const QS
     }
 
     if (next) {
-        d->m_webQuote.launch(next->text(WEBID_COL), next->text(KMMID_COL), next->text(SOURCE_COL));
+        d->m_quote.launch(next->text(WEBID_COL), next->text(KMMID_COL), next->text(SOURCE_COL));
     } else {
         finishUpdate();
     }
 }
-
-void KEquityPriceUpdateDlg::slotReceivedQuote(const QString& _kmmID, const QString& _webID, const QDate& _date, const double& _price)
-{
-    Q_D(KEquityPriceUpdateDlg);
-    auto foundItems = d->ui->lvEquityList->findItems(_kmmID, Qt::MatchExactly, KMMID_COL);
-    QTreeWidgetItem* item = nullptr;
-
-    if (! foundItems.empty())
-        item = foundItems.at(0);
-
-    QTreeWidgetItem* next = 0;
-
-    if (item) {
-        if (_price > 0.0f && _date.isValid()) {
-            QDate date = _date;
-            if (date > QDate::currentDate())
-                date = QDate::currentDate();
-
-            MyMoneyMoney price = MyMoneyMoney::ONE;
-            QString id = _kmmID.toUtf8();
-            MyMoneySecurity fromCurrency, toCurrency;
-            if (_kmmID.contains(" ") == 0) {
-                MyMoneySecurity security = MyMoneyFile::instance()->security(id);
-                QString factor = security.value("kmm-online-factor");
-                if (!factor.isEmpty()) {
-                    price = price * MyMoneyMoney(factor);
-                }
-                try {
-                    toCurrency = MyMoneyFile::instance()->security(id);
-                    fromCurrency = MyMoneyFile::instance()->security(toCurrency.tradingCurrency());
-                } catch (const MyMoneyException &) {
-                    fromCurrency = toCurrency = MyMoneySecurity();
-                }
-
-            } else {
-                QRegularExpressionMatch match(d->m_splitRegex.match(_kmmID));
-                if (match.hasMatch()) {
-                    try {
-                        fromCurrency = MyMoneyFile::instance()->security(match.captured(2).toUtf8());
-                        toCurrency = MyMoneyFile::instance()->security(match.captured(1).toUtf8());
-                    } catch (const MyMoneyException &) {
-                        fromCurrency = toCurrency = MyMoneySecurity();
-                    }
-                }
-            }
-            price *= MyMoneyMoney(_price, MyMoneyMoney::precToDenom(toCurrency.pricePrecision()));
-
-            item->setText(PRICE_COL, price.formatMoney(fromCurrency.tradingSymbol(), toCurrency.pricePrecision()));
-            item->setText(DATE_COL, date.toString(Qt::ISODate));
-            logStatusMessage(i18n("Price for %1 updated (id %2)", _webID, _kmmID));
-            // make sure to make OK button available
-            d->ui->buttonBox->button(QDialogButtonBox::Ok)->setEnabled(true);
-        } else {
-            logErrorMessage(i18n("Received an invalid price for %1, unable to update.", _webID));
-        }
-
-        d->ui->prgOnlineProgress->setValue(d->ui->prgOnlineProgress->value() + 1);
-        item->setSelected(false);
-
-        // launch the NEXT one ... in case of m_fUpdateAll == false, we
-        // need to parse the list to find the next selected one
-        next = d->ui->lvEquityList->invisibleRootItem()->child(d->ui->lvEquityList->invisibleRootItem()->indexOfChild(item) + 1);
-        if (!d->m_fUpdateAll) {
-            while (next && !next->isSelected()) {
-                d->ui->prgOnlineProgress->setValue(d->ui->prgOnlineProgress->value() + 1);
-                next = d->ui->lvEquityList->invisibleRootItem()->child(d->ui->lvEquityList->invisibleRootItem()->indexOfChild(next) + 1);
-            }
-        }
-    } else {
-        logErrorMessage(i18n("Received a price for %1 (id %2), but this symbol is not on the list. Aborting entire update.", _webID, _kmmID));
-    }
-
-    if (next) {
-        d->m_webQuote.launch(next->text(WEBID_COL), next->text(KMMID_COL), next->text(SOURCE_COL));
-    } else {
-        finishUpdate();
-    }
-}
-
-void KEquityPriceUpdateDlg::finishUpdate()
-{
-    Q_D(KEquityPriceUpdateDlg);
-    // we've run past the end, reset to the default value.
-    d->m_fUpdateAll = false;
-
-    // force progress bar to show 100% and hide it after a while
-    d->ui->prgOnlineProgress->setValue(d->ui->prgOnlineProgress->maximum());
-    QTimer::singleShot(500, d->ui->prgOnlineProgress, &QProgressBar::hide);
-
-    // re-enable the sorting that was disabled during the update process
-    d->ui->lvEquityList->setSortingEnabled(true);
-}
+#endif
 
 // Make sure, that these definitions are only used within this file
 // this does not seem to be necessary, but when building RPMs the
@@ -879,3 +853,5 @@ void KEquityPriceUpdateDlg::finishUpdate()
 #undef DATE_COL
 #undef KMMID_COL
 #undef SOURCE_COL
+
+#include "kequitypriceupdatedlg.moc"

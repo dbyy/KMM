@@ -674,6 +674,10 @@ void MyMoneyFile::commitTransaction()
         }
     }
 
+    if (!d->m_valueChangedSet.isEmpty()) {
+        d->journalModel.updateBalances();
+    }
+
     d->m_valueChangedSet.clear();
 
     // as a last action, update the last modification date and send out the global dataChanged signal
