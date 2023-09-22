@@ -393,7 +393,6 @@ public:
 
     void slotUpdateSelected()
     {
-        Q_Q(KEquityPriceUpdateDlg);
         // disable sorting while the update is running to maintain the current order of items on which
         // the update process depends and which could be changed with sorting enabled due to the updated values
         ui->lvEquityList->setSortingEnabled(false);
@@ -440,7 +439,6 @@ public:
 
     void slotUpdateAll()
     {
-        Q_Q(KEquityPriceUpdateDlg);
         if (ui->lvEquityList->model()->rowCount() > 0) {
             m_fUpdateAll = true;
             slotUpdateSelected();
@@ -513,7 +511,6 @@ public:
 
     void slotReceivedQuote(const QString& _kmmID, const QString& _webID, const QDate& _date, const double& _price)
     {
-        Q_Q(KEquityPriceUpdateDlg);
         if (m_currentItem) {
             if (_price > 0.0f && _date.isValid()) {
                 QDate date = _date;
