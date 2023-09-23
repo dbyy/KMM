@@ -53,13 +53,6 @@
 
 #include "kmmyesno.h"
 
-#define WEBID_COL       0
-#define NAME_COL        1
-#define PRICE_COL       2
-#define DATE_COL        3
-#define KMMID_COL       4
-#define SOURCE_COL      5
-
 class KEquityPriceUpdateDlgPrivate : public QObject
 {
     Q_OBJECT
@@ -67,6 +60,15 @@ class KEquityPriceUpdateDlgPrivate : public QObject
     Q_DECLARE_PUBLIC(KEquityPriceUpdateDlg)
 
 public:
+    enum Columns {
+        WEBID_COL,
+        NAME_COL,
+        PRICE_COL,
+        DATE_COL,
+        KMMID_COL,
+        SOURCE_COL,
+    };
+
     explicit KEquityPriceUpdateDlgPrivate(KEquityPriceUpdateDlg* qq)
         : QObject(qq)
         , q_ptr(qq)
@@ -615,25 +617,33 @@ MyMoneyPrice KEquityPriceUpdateDlg::price(const QString& id) const
 {
     Q_D(const KEquityPriceUpdateDlg);
     MyMoneyPrice price;
-    QList<QTreeWidgetItem*> foundItems = d->ui->lvEquityList->findItems(id, Qt::MatchExactly, KMMID_COL);
+    QList<QTreeWidgetItem*> foundItems = d->ui->lvEquityList->findItems(id, Qt::MatchExactly, KEquityPriceUpdateDlgPrivate::KMMID_COL);
 
     if (!foundItems.empty()) {
         const auto* const item = foundItems.at(0);
-        MyMoneyMoney rate(item->text(PRICE_COL));
+        MyMoneyMoney rate(item->text(KEquityPriceUpdateDlgPrivate::PRICE_COL));
         if (!rate.isZero()) {
-            QString kmm_id = item->text(KMMID_COL).toUtf8();
+            QString kmm_id = item->text(KEquityPriceUpdateDlgPrivate::KMMID_COL).toUtf8();
 
             // if the ID has a space, then this is TWO ID's, so it's a currency quote
             if (kmm_id.contains(" ")) {
                 QStringList ids = kmm_id.split(' ', Qt::SkipEmptyParts);
                 QString fromid = ids[0].toUtf8();
                 QString toid = ids[1].toUtf8();
-                price = MyMoneyPrice(fromid, toid, QDate().fromString(item->text(DATE_COL), Qt::ISODate), rate, item->text(SOURCE_COL));
+                price = MyMoneyPrice(fromid,
+                                     toid,
+                                     QDate().fromString(item->text(KEquityPriceUpdateDlgPrivate::DATE_COL), Qt::ISODate),
+                                     rate,
+                                     item->text(KEquityPriceUpdateDlgPrivate::SOURCE_COL));
             } else
                 // otherwise, it's a security quote
             {
                 MyMoneySecurity security = MyMoneyFile::instance()->security(kmm_id);
-                price = MyMoneyPrice(kmm_id, security.tradingCurrency(), QDate().fromString(item->text(DATE_COL), Qt::ISODate), rate, item->text(SOURCE_COL));
+                price = MyMoneyPrice(kmm_id,
+                                     security.tradingCurrency(),
+                                     QDate().fromString(item->text(KEquityPriceUpdateDlgPrivate::DATE_COL), Qt::ISODate),
+                                     rate,
+                                     item->text(KEquityPriceUpdateDlgPrivate::SOURCE_COL));
             }
         }
     }
@@ -655,9 +665,9 @@ void KEquityPriceUpdateDlg::storePrices()
             // turn on signals before we modify the last entry in the list
             file->blockSignals(i < d->ui->lvEquityList->invisibleRootItem()->childCount() - 1);
 
-            MyMoneyMoney rate(item->text(PRICE_COL));
+            MyMoneyMoney rate(item->text(KEquityPriceUpdateDlgPrivate::PRICE_COL));
             if (!rate.isZero()) {
-                QString id = item->text(KMMID_COL);
+                QString id = item->text(KEquityPriceUpdateDlgPrivate::KMMID_COL);
                 QString fromid;
                 QString toid;
 
@@ -676,7 +686,11 @@ void KEquityPriceUpdateDlg::storePrices()
                 // TODO (Ace) Better handling of the case where there is already a price
                 // for this date.  Currently, it just overrides the old value.  Really it
                 // should check to see if the price is the same and prompt the user.
-                file->addPrice(MyMoneyPrice(fromid, toid, QDate::fromString(item->text(DATE_COL), Qt::ISODate), rate, item->text(SOURCE_COL)));
+                file->addPrice(MyMoneyPrice(fromid,
+                                            toid,
+                                            QDate::fromString(item->text(KEquityPriceUpdateDlgPrivate::DATE_COL), Qt::ISODate),
+                                            rate,
+                                            item->text(KEquityPriceUpdateDlgPrivate::SOURCE_COL)));
             }
         }
         ft.commit();
@@ -690,7 +704,7 @@ void KEquityPriceUpdateDlg::storePrices()
 void KEquityPriceUpdateDlg::slotReceivedCSVQuote(const QString& _kmmID, const QString& _webID, MyMoneyStatement& st)
 {
     Q_D(KEquityPriceUpdateDlg);
-    auto foundItems = d->ui->lvEquityList->findItems(_kmmID, Qt::MatchExactly, KMMID_COL);
+    auto foundItems = d->ui->lvEquityList->findItems(_kmmID, Qt::MatchExactly, KEquityPriceUpdateDlgPrivate::KMMID_COL);
     QTreeWidgetItem* item = nullptr;
 
     if (! foundItems.empty())
@@ -799,11 +813,11 @@ void KEquityPriceUpdateDlg::slotReceivedCSVQuote(const QString& _kmmID, const QS
             }
             lastEntry = priceClass.m_date;
             // update latest price in dialog if applicable
-            auto latestDate = QDate::fromString(item->text(DATE_COL),Qt::ISODate);
+            auto latestDate = QDate::fromString(item->text(KEquityPriceUpdateDlgPrivate::DATE_COL),Qt::ISODate);
             if (latestDate <= priceClass.m_date && priceClass.m_amount.isPositive()) {
-                item->setText(PRICE_COL, priceClass.m_amount.formatMoney(fromCurrency.tradingSymbol(), toCurrency.pricePrecision()));
-                item->setText(DATE_COL, priceClass.m_date.toString(Qt::ISODate));
-                item->setText(SOURCE_COL, priceClass.m_sourceName);
+                item->setText(KEquityPriceUpdateDlgPrivate::PRICE_COL, priceClass.m_amount.formatMoney(fromCurrency.tradingSymbol(), toCurrency.pricePrecision()));
+                item->setText(KEquityPriceUpdateDlgPrivate::DATE_COL, priceClass.m_date.toString(Qt::ISODate));
+                item->setText(KEquityPriceUpdateDlgPrivate::SOURCE_COL, priceClass.m_sourceName);
             }
             logStatusMessage(i18nc("Log message e.g. 'Prices for EUR > USD updated between 2001-01-01 and 2001-02-01 (id EUR USD)'",
                                    "Prices for %1 updated between %3 and %4 (id %2)",
@@ -838,17 +852,5 @@ void KEquityPriceUpdateDlg::slotReceivedCSVQuote(const QString& _kmmID, const QS
     }
 }
 #endif
-
-// Make sure, that these definitions are only used within this file
-// this does not seem to be necessary, but when building RPMs the
-// build option 'final' is used and all CPP files are concatenated.
-// So it could well be, that in another CPP file these definitions
-// are also used.
-#undef WEBID_COL
-#undef NAME_COL
-#undef PRICE_COL
-#undef DATE_COL
-#undef KMMID_COL
-#undef SOURCE_COL
 
 #include "kequitypriceupdatedlg.moc"
