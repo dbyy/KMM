@@ -26,14 +26,14 @@
 
 #include "ui_ksettingsonlinequotes.h"
 
-#include "icons.h"
-#include "mymoneyfile.h"
-#include "mymoneysecurity.h"
-
 #include <alkimia/alkonlinequotesource.h>
 #include <alkimia/alkonlinequotesprofile.h>
-#include <alkimia/alkonlinequotesprofilemanager.h>
 #include <alkimia/alkonlinequoteswidget.h>
+
+#include "icons.h"
+#include "kmmonlinequotesprofilemanager.h"
+#include "mymoneyfile.h"
+#include "mymoneysecurity.h"
 
 #include "kmmyesno.h"
 
@@ -66,16 +66,9 @@ KSettingsOnlineQuotes::KSettingsOnlineQuotes(QWidget *parent) :
 {
     Q_D(KSettingsOnlineQuotes);
 
-    AlkOnlineQuotesProfileManager& manager = AlkOnlineQuotesProfileManager::instance();
-    // if the profile does not already exist
-    auto quoteProfile = manager.profile(QLatin1String("kmymoney5"));
-    if (!quoteProfile) {
-        // create the quoteprofile and make sure it uses our idea of the configuration
-        quoteProfile = new AlkOnlineQuotesProfile("kmymoney5", AlkOnlineQuotesProfile::Type::KMyMoney5, "kmymoney-quotes.knsrc");
-        quoteProfile->setKConfig(KSharedConfig::openConfig());
-        // add profile to manager
-        manager.addProfile(quoteProfile);
-    }
+    // initialize if it does not yet exist
+    KMMOnlineQuotesProfileManager::instance();
+
     d->m_quotesWidgetContainer = new AlkOnlineQuotesWidget;
 
     auto layout = new QVBoxLayout(this);

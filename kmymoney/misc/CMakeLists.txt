@@ -15,6 +15,7 @@ set( kmm_textbrowser_SRCS
 )
 set( kmm_webconnect_SRCS
   webconnect.cpp
+  kmmonlinequotesprofilemanager.cpp
 )
 
 set ( kmm_keychain_SRCS

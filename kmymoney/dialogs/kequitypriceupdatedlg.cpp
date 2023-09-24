@@ -36,11 +36,11 @@
 
 #include <alkimia/alkonlinequote.h>
 #include <alkimia/alkonlinequotesource.h>
-#include <alkimia/alkonlinequotesprofilemanager.h>
 
 #include "dialogenums.h"
 #include "icons.h"
 #include "kequitypriceupdateconfdlg.h"
+#include "kmmonlinequotesprofilemanager.h"
 #include "kmymoneyutils.h"
 #include "mymoneyaccount.h"
 #include "mymoneyexception.h"
@@ -79,26 +79,6 @@ public:
         , m_splitRegex("([0-9a-z\\.]+)[^a-z0-9]+([0-9a-z\\.]+)", QRegularExpression::CaseInsensitiveOption)
         , m_currentItem(nullptr)
     {
-        auto& manager = AlkOnlineQuotesProfileManager::instance();
-
-        struct OnlineProfileConfig {
-            AlkOnlineQuotesProfile::Type type;
-            const char* name;
-            const char* ghnsName;
-        };
-        struct OnlineProfileConfig onlineProfileList[] = {
-            {AlkOnlineQuotesProfile::Type::KMyMoney5, "kmymoney5", "kmymoney-quotes.knsrc"},
-            {AlkOnlineQuotesProfile::Type::Script, "Finance::Quote", ""},
-        };
-
-        for (const auto& onlineProfile : onlineProfileList) {
-            auto quoteProfile = manager.profile(onlineProfile.name);
-            if (!quoteProfile) {
-                // create the quoteprofile and make sure it uses our idea of the configuration
-                quoteProfile = new AlkOnlineQuotesProfile(QString(onlineProfile.name), onlineProfile.type, onlineProfile.ghnsName);
-                manager.addProfile(quoteProfile);
-            }
-        }
     }
 
     ~KEquityPriceUpdateDlgPrivate()
@@ -108,7 +88,7 @@ public:
 
     AlkOnlineQuotesProfile* quoteProfile(const QString& profileName)
     {
-        auto& manager = AlkOnlineQuotesProfileManager::instance();
+        auto& manager = KMMOnlineQuotesProfileManager::instance();
         if (profileName.isEmpty()) {
             return manager.profile(QLatin1String("kmymoney5"));
         }
