@@ -53,6 +53,8 @@
 
 #include "kmmyesno.h"
 
+#define SUPPORT_CSV_PRICE_QUOTES 0
+
 class KEquityPriceUpdateDlgPrivate : public QObject
 {
     Q_OBJECT
@@ -100,10 +102,12 @@ public:
         Q_Q(KEquityPriceUpdateDlg);
         ui->setupUi(q);
 
+#if SUPPORT_CSV_PRICE_QUOTES == 0
         // as long as we don't support the CSV import of prices
         // for a period of multiple days, we simply don't show the
         // date entry widgets.
         ui->m_dateContainer->hide();
+#endif
 
         m_fUpdateAll = false;
         QStringList headerList;
@@ -191,6 +195,9 @@ public:
         connect(&m_quote, &AlkOnlineQuote::error, this, &KEquityPriceUpdateDlgPrivate::logErrorMessage);
         connect(&m_quote, &AlkOnlineQuote::failed, this, &KEquityPriceUpdateDlgPrivate::slotQuoteFailed);
         connect(&m_quote, &AlkOnlineQuote::quote, this, &KEquityPriceUpdateDlgPrivate::slotReceivedQuote);
+#if SUPPORT_CSV_PRICE_QUOTES
+        connect(&m_quote, &AlkOnlineQuote::quotes, this, &KEquityPriceUpdateDlgPrivate::slotReceivedQuotes);
+#endif
 
         connect(ui->lvEquityList, &QTreeWidget::itemSelectionChanged, this, [&]() {
             updateButtonState();
@@ -541,6 +548,162 @@ public:
         }
     }
 
+#if SUPPORT_CSV_PRICE_QUOTES
+    void slotReceivedQuotes(const QString& securityId, const QString& symbol, const AlkDatePriceMap& quotes)
+    {
+        auto foundItems = ui->lvEquityList->findItems(securityId, Qt::MatchExactly, KEquityPriceUpdateDlgPrivate::KMMID_COL);
+        QTreeWidgetItem* item = nullptr;
+
+        if (!foundItems.empty())
+            item = foundItems.at(0);
+
+        QTreeWidgetItem* next = nullptr;
+
+        if (item) {
+            auto file = MyMoneyFile::instance();
+            MyMoneySecurity fromCurrency, toCurrency;
+
+            if (!securityId.contains(QLatin1Char(' '))) {
+                try {
+                    toCurrency = MyMoneyFile::instance()->security(securityId);
+                    fromCurrency = MyMoneyFile::instance()->security(toCurrency.tradingCurrency());
+                } catch (const MyMoneyException&) {
+                    fromCurrency = toCurrency = MyMoneySecurity();
+                }
+
+            } else {
+                QRegularExpressionMatch match(m_splitRegex.match(securityId));
+                if (match.hasMatch()) {
+                    try {
+                        fromCurrency = MyMoneyFile::instance()->security(match.captured(2));
+                        toCurrency = MyMoneyFile::instance()->security(match.captured(1));
+                    } catch (const MyMoneyException&) {
+                        fromCurrency = toCurrency = MyMoneySecurity();
+                    }
+                }
+            }
+
+#if 1
+            if (m_updatingPricePolicy != eDialogs::UpdatePrice::All) {
+                QStringList qSources = WebPriceQuote::quoteSources();
+                for (auto it = st.m_listPrices.begin(); it != st.m_listPrices.end();) {
+                    MyMoneyPrice storedPrice = file->price(toCurrency.id(), fromCurrency.id(), (*it).m_date, true);
+                    bool priceValid = storedPrice.isValid();
+                    if (!priceValid)
+                        ++it;
+                    else {
+                        switch (m_updatingPricePolicy) {
+                        case eDialogs::UpdatePrice::Missing:
+                            it = st.m_listPrices.erase(it);
+                            break;
+                        case eDialogs::UpdatePrice::Downloaded:
+                            if (!qSources.contains(storedPrice.source()))
+                                it = st.m_listPrices.erase(it);
+                            else
+                                ++it;
+                            break;
+                        case eDialogs::UpdatePrice::SameSource:
+                            if (storedPrice.source().compare((*it).m_sourceName) != 0)
+                                it = st.m_listPrices.erase(it);
+                            else
+                                ++it;
+                            break;
+                        case eDialogs::UpdatePrice::Ask: {
+                            auto result = KMessageBox::questionTwoActionsCancel(this,
+                                                                                i18n("For <b>%1</b> on <b>%2</b> price <b>%3</b> already exists.<br>"
+                                                                                     "Do you want to replace it with <b>%4</b>?",
+                                                                                     storedPrice.from(),
+                                                                                     storedPrice.date().toString(Qt::ISODate),
+                                                                                     QString().setNum(storedPrice.rate(storedPrice.to()).toDouble(), 'g', 10),
+                                                                                     QString().setNum((*it).m_amount.toDouble(), 'g', 10)),
+                                                                                i18n("Price Already Exists"),
+                                                                                KMMYesNo::yes(),
+                                                                                KMMYesNo::no());
+                            switch (result) {
+                            case KMessageBox::ButtonCode::PrimaryAction:
+                                ++it;
+                                break;
+                            case KMessageBox::ButtonCode::SecondaryAction:
+                                it = st.m_listPrices.erase(it);
+                                break;
+                            default:
+                            case KMessageBox::ButtonCode::Cancel:
+                                finishUpdate();
+                                return;
+                                break;
+                            }
+                            break;
+                        }
+                        default:
+                            ++it;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!quotes.isEmpty()) {
+                MyMoneyFileTransaction ft;
+                KMyMoneyUtils::processPriceList(st);
+                ft.commit();
+
+                // latest price could be in the last or in the first row
+                MyMoneyStatement::Price priceClass;
+                QDate firstEntry;
+                QDate lastEntry;
+                if (st.m_listPrices.first().m_date > st.m_listPrices.last().m_date) {
+                    priceClass = st.m_listPrices.first();
+                    firstEntry = st.m_listPrices.last().m_date;
+                } else {
+                    priceClass = st.m_listPrices.last();
+                    firstEntry = st.m_listPrices.first().m_date;
+                }
+                lastEntry = priceClass.m_date;
+                // update latest price in dialog if applicable
+                auto latestDate = QDate::fromString(item->text(KEquityPriceUpdateDlgPrivate::DATE_COL), Qt::ISODate);
+                if (latestDate <= priceClass.m_date && priceClass.m_amount.isPositive()) {
+                    item->setText(KEquityPriceUpdateDlgPrivate::PRICE_COL,
+                                  priceClass.m_amount.formatMoney(fromCurrency.tradingSymbol(), toCurrency.pricePrecision()));
+                    item->setText(KEquityPriceUpdateDlgPrivate::DATE_COL, priceClass.m_date.toString(Qt::ISODate));
+                    item->setText(KEquityPriceUpdateDlgPrivate::SOURCE_COL, priceClass.m_sourceName);
+                }
+                logStatusMessage(i18nc("Log message e.g. 'Prices for EUR > USD updated between 2001-01-01 and 2001-02-01 (id EUR USD)'",
+                                       "Prices for %1 updated between %3 and %4 (id %2)",
+                                       symbol,
+                                       securityId,
+                                       firstEntry.toString(Qt::ISODate),
+                                       lastEntry.toString(Qt::ISODate)));
+                // make sure to make OK button available
+            }
+            d->ui->buttonBox->button(QDialogButtonBox::Ok)->setEnabled(true);
+
+            d->ui->prgOnlineProgress->setValue(d->ui->prgOnlineProgress->value() + 1);
+            item->setSelected(false);
+
+            // launch the NEXT one ... in case of m_fUpdateAll == false, we
+            // need to parse the list to find the next selected one
+            next = d->ui->lvEquityList->invisibleRootItem()->child(d->ui->lvEquityList->invisibleRootItem()->indexOfChild(item) + 1);
+            if (!d->m_fUpdateAll) {
+                while (next && !next->isSelected()) {
+                    d->ui->prgOnlineProgress->setValue(d->ui->prgOnlineProgress->value() + 1);
+                    next = d->ui->lvEquityList->invisibleRootItem()->child(d->ui->lvEquityList->invisibleRootItem()->indexOfChild(next) + 1);
+                }
+            }
+#endif
+        } else {
+            logErrorMessage(i18n("Received a price for %1 (id %2), but this symbol is not on the list. Aborting entire update.", symbol, securityId));
+        }
+
+#if 0
+        if (next) {
+            d->m_quote.launch(next->text(WEBID_COL), next->text(KMMID_COL), next->text(SOURCE_COL));
+        } else {
+            finishUpdate();
+        }
+#endif
+    }
+#endif // SUPPORT_CSV
+
     KEquityPriceUpdateDlg* q_ptr;
     Ui::KEquityPriceUpdateDlg* ui;
     bool m_fUpdateAll;
@@ -679,158 +842,5 @@ void KEquityPriceUpdateDlg::storePrices()
         qDebug("Unable to add price information for %s", qPrintable(name));
     }
 }
-
-#if 0
-void KEquityPriceUpdateDlg::slotReceivedCSVQuote(const QString& _kmmID, const QString& _webID, MyMoneyStatement& st)
-{
-    Q_D(KEquityPriceUpdateDlg);
-    auto foundItems = d->ui->lvEquityList->findItems(_kmmID, Qt::MatchExactly, KEquityPriceUpdateDlgPrivate::KMMID_COL);
-    QTreeWidgetItem* item = nullptr;
-
-    if (! foundItems.empty())
-        item = foundItems.at(0);
-
-    QTreeWidgetItem* next = nullptr;
-
-    if (item) {
-        auto file = MyMoneyFile::instance();
-        MyMoneySecurity fromCurrency, toCurrency;
-
-        if (!_kmmID.contains(QLatin1Char(' '))) {
-            try {
-                toCurrency = MyMoneyFile::instance()->security(_kmmID);
-                fromCurrency = MyMoneyFile::instance()->security(toCurrency.tradingCurrency());
-            } catch (const MyMoneyException &) {
-                fromCurrency = toCurrency = MyMoneySecurity();
-            }
-
-        } else {
-            QRegularExpressionMatch match(d->m_splitRegex.match(_kmmID));
-            if (match.hasMatch()) {
-                try {
-                    fromCurrency = MyMoneyFile::instance()->security(match.captured(2).toUtf8());
-                    toCurrency = MyMoneyFile::instance()->security(match.captured(1).toUtf8());
-                } catch (const MyMoneyException &) {
-                    fromCurrency = toCurrency = MyMoneySecurity();
-                }
-            }
-        }
-
-        if (d->m_updatingPricePolicy != eDialogs::UpdatePrice::All) {
-            QStringList qSources = WebPriceQuote::quoteSources();
-            for (auto it = st.m_listPrices.begin(); it != st.m_listPrices.end();) {
-                MyMoneyPrice storedPrice = file->price(toCurrency.id(), fromCurrency.id(), (*it).m_date, true);
-                bool priceValid = storedPrice.isValid();
-                if (!priceValid)
-                    ++it;
-                else {
-                    switch(d->m_updatingPricePolicy) {
-                    case eDialogs::UpdatePrice::Missing:
-                        it = st.m_listPrices.erase(it);
-                        break;
-                    case eDialogs::UpdatePrice::Downloaded:
-                        if (!qSources.contains(storedPrice.source()))
-                            it = st.m_listPrices.erase(it);
-                        else
-                            ++it;
-                        break;
-                    case eDialogs::UpdatePrice::SameSource:
-                        if (storedPrice.source().compare((*it).m_sourceName) != 0)
-                            it = st.m_listPrices.erase(it);
-                        else
-                            ++it;
-                        break;
-                    case eDialogs::UpdatePrice::Ask:
-                    {
-                        auto result = KMessageBox::questionTwoActionsCancel(this,
-                                                                            i18n("For <b>%1</b> on <b>%2</b> price <b>%3</b> already exists.<br>"
-                                                                                 "Do you want to replace it with <b>%4</b>?",
-                                                                                 storedPrice.from(),
-                                                                                 storedPrice.date().toString(Qt::ISODate),
-                                                                                 QString().setNum(storedPrice.rate(storedPrice.to()).toDouble(), 'g', 10),
-                                                                                 QString().setNum((*it).m_amount.toDouble(), 'g', 10)),
-                                                                            i18n("Price Already Exists"),
-                                                                            KMMYesNo::yes(),
-                                                                            KMMYesNo::no());
-                        switch(result) {
-                        case KMessageBox::ButtonCode::PrimaryAction:
-                            ++it;
-                            break;
-                        case KMessageBox::ButtonCode::SecondaryAction:
-                            it = st.m_listPrices.erase(it);
-                            break;
-                        default:
-                        case KMessageBox::ButtonCode::Cancel:
-                            finishUpdate();
-                            return;
-                            break;
-                        }
-                        break;
-                    }
-                    default:
-                        ++it;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (!st.m_listPrices.isEmpty()) {
-            MyMoneyFileTransaction ft;
-            KMyMoneyUtils::processPriceList(st);
-            ft.commit();
-
-            // latest price could be in the last or in the first row
-            MyMoneyStatement::Price priceClass;
-            QDate firstEntry;
-            QDate lastEntry;
-            if (st.m_listPrices.first().m_date > st.m_listPrices.last().m_date) {
-                priceClass = st.m_listPrices.first();
-                firstEntry = st.m_listPrices.last().m_date;
-            } else {
-                priceClass = st.m_listPrices.last();
-                firstEntry = st.m_listPrices.first().m_date;
-            }
-            lastEntry = priceClass.m_date;
-            // update latest price in dialog if applicable
-            auto latestDate = QDate::fromString(item->text(KEquityPriceUpdateDlgPrivate::DATE_COL),Qt::ISODate);
-            if (latestDate <= priceClass.m_date && priceClass.m_amount.isPositive()) {
-                item->setText(KEquityPriceUpdateDlgPrivate::PRICE_COL, priceClass.m_amount.formatMoney(fromCurrency.tradingSymbol(), toCurrency.pricePrecision()));
-                item->setText(KEquityPriceUpdateDlgPrivate::DATE_COL, priceClass.m_date.toString(Qt::ISODate));
-                item->setText(KEquityPriceUpdateDlgPrivate::SOURCE_COL, priceClass.m_sourceName);
-            }
-            logStatusMessage(i18nc("Log message e.g. 'Prices for EUR > USD updated between 2001-01-01 and 2001-02-01 (id EUR USD)'",
-                                   "Prices for %1 updated between %3 and %4 (id %2)",
-                                   _webID,
-                                   _kmmID,
-                                   firstEntry.toString(Qt::ISODate),
-                                   lastEntry.toString(Qt::ISODate)));
-            // make sure to make OK button available
-        }
-        d->ui->buttonBox->button(QDialogButtonBox::Ok)->setEnabled(true);
-
-        d->ui->prgOnlineProgress->setValue(d->ui->prgOnlineProgress->value() + 1);
-        item->setSelected(false);
-
-        // launch the NEXT one ... in case of m_fUpdateAll == false, we
-        // need to parse the list to find the next selected one
-        next = d->ui->lvEquityList->invisibleRootItem()->child(d->ui->lvEquityList->invisibleRootItem()->indexOfChild(item) + 1);
-        if (!d->m_fUpdateAll) {
-            while (next && !next->isSelected()) {
-                d->ui->prgOnlineProgress->setValue(d->ui->prgOnlineProgress->value() + 1);
-                next = d->ui->lvEquityList->invisibleRootItem()->child(d->ui->lvEquityList->invisibleRootItem()->indexOfChild(next) + 1);
-            }
-        }
-    } else {
-        logErrorMessage(i18n("Received a price for %1 (id %2), but this symbol is not on the list. Aborting entire update.", _webID, _kmmID));
-    }
-
-    if (next) {
-        d->m_quote.launch(next->text(WEBID_COL), next->text(KMMID_COL), next->text(SOURCE_COL));
-    } else {
-        finishUpdate();
-    }
-}
-#endif
 
 #include "kequitypriceupdatedlg.moc"
