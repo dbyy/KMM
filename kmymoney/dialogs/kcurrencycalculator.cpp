@@ -47,7 +47,6 @@ public:
     explicit KCurrencyCalculatorPrivate(KCurrencyCalculator* qq)
         : q_ptr(qq)
         , ui(new Ui::KCurrencyCalculator)
-        , m_resultFraction(100)
     {
     }
 
@@ -311,11 +310,11 @@ bool KCurrencyCalculator::setupSplitPrice(MyMoneyMoney& shares,
             }
             // if the shares are still 0, we need to change that
             if (toValue.isZero()) {
-                const MyMoneyPrice& storedPrice = file->price(fromCurrency.id(), toCurrency.id(), t.postDate());
+                const MyMoneyPrice &price = file->price(fromCurrency.id(), toCurrency.id(), t.postDate());
                 // if the price is valid calculate the shares. If it is invalid
                 // assume a conversion rate of 1.0
-                if (storedPrice.isValid()) {
-                    toValue = (storedPrice.rate(toCurrency.id()) * fromValue).convert(fract);
+                if (price.isValid()) {
+                    toValue = (price.rate(toCurrency.id()) * fromValue).convert(fract);
                 } else {
                     toValue = fromValue;
                 }
@@ -376,7 +375,7 @@ void KCurrencyCalculator::slotUpdateResult(const QString& /*txt*/)
 {
     Q_D(KCurrencyCalculator);
     MyMoneyMoney result = d->ui->m_toAmount->value();
-    MyMoneyMoney calculatedPrice(MyMoneyMoney::ONE);
+    MyMoneyMoney price(MyMoneyMoney::ONE);
 
     if (result.isNegative()) {
         d->ui->m_toAmount->setValue(-result);
@@ -385,33 +384,33 @@ void KCurrencyCalculator::slotUpdateResult(const QString& /*txt*/)
     }
 
     if (!result.isZero() && !d->m_fromAmount.isZero()) {
-        calculatedPrice = result / d->m_fromAmount;
+        price = result / d->m_fromAmount;
 
-        d->ui->m_conversionRate->setValue(calculatedPrice);
-        d->m_toAmount = (d->m_fromAmount * calculatedPrice).convert(d->m_resultFraction);
+        d->ui->m_conversionRate->setValue(price);
+        d->m_toAmount = (d->m_fromAmount * price).convert(d->m_resultFraction);
 
         d->ui->m_toAmount->setValue(d->m_toAmount);
     }
-    d->updateExample(calculatedPrice);
+    d->updateExample(price);
 }
 
 void KCurrencyCalculator::slotUpdateRate(const QString& /*txt*/)
 {
     Q_D(KCurrencyCalculator);
-    auto calculatedPrice = d->ui->m_conversionRate->value();
+    auto price = d->ui->m_conversionRate->value();
 
-    if (calculatedPrice.isNegative()) {
-        d->ui->m_conversionRate->setValue(-calculatedPrice);
+    if (price.isNegative()) {
+        d->ui->m_conversionRate->setValue(-price);
         slotUpdateRate(QString());
         return;
     }
 
-    if (!calculatedPrice.isZero()) {
-        d->ui->m_conversionRate->setValue(calculatedPrice);
-        d->m_toAmount = (d->m_fromAmount * calculatedPrice).convert(d->m_resultFraction);
+    if (!price.isZero()) {
+        d->ui->m_conversionRate->setValue(price);
+        d->m_toAmount = (d->m_fromAmount * price).convert(d->m_resultFraction);
         d->ui->m_toAmount->setValue(d->m_toAmount);
     }
-    d->updateExample(calculatedPrice);
+    d->updateExample(price);
 }
 
 void KCurrencyCalculator::accept()
@@ -501,18 +500,16 @@ void KCurrencyCalculator::updateConversion(MultiCurrencyEdit* amountEdit, const 
 
     calc = new KCurrencyCalculator(fromSecurity, toSecurity, fromValue, toValue, date, fraction, amountEdit->widget());
 
-    if (calc->exec() == QDialog::Accepted) {
-        if (calc) {
-            switch (state) {
-            case MultiCurrencyEdit::DisplayShares:
-                amountEdit->setValue(fromValue * calc->price());
-                amountEdit->setShares(fromValue);
-                break;
-            case MultiCurrencyEdit::DisplayValue:
-                amountEdit->setValue(fromValue);
-                amountEdit->setShares(fromValue * calc->price());
-                break;
-            }
+    if (calc->exec() == QDialog::Accepted && calc) {
+        switch (state) {
+        case MultiCurrencyEdit::DisplayShares:
+            amountEdit->setValue(fromValue * calc->price());
+            amountEdit->setShares(fromValue);
+            break;
+        case MultiCurrencyEdit::DisplayValue:
+            amountEdit->setValue(fromValue);
+            amountEdit->setShares(fromValue * calc->price());
+            break;
         }
     }
     delete calc;

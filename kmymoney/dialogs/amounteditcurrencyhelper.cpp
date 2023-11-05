@@ -29,9 +29,8 @@ class AmountEditCurrencyHelperPrivate
     Q_DECLARE_PUBLIC(AmountEditCurrencyHelper)
 
 public:
-    AmountEditCurrencyHelperPrivate(AmountEditCurrencyHelper* qq, MultiCurrencyEdit* aamount)
+    AmountEditCurrencyHelperPrivate(AmountEditCurrencyHelper* qq)
         : q_ptr(qq)
-        , amount(aamount)
     {
     }
 
@@ -52,9 +51,10 @@ public:
 
 AmountEditCurrencyHelper::AmountEditCurrencyHelper(KMyMoneyAccountCombo* category, MultiCurrencyEdit* amount, const QString& commodityId)
     : QObject(category)
-    , d_ptr(new AmountEditCurrencyHelperPrivate(this, amount))
+    , d_ptr(new AmountEditCurrencyHelperPrivate(this))
 {
     Q_D(AmountEditCurrencyHelper);
+    d->amount = amount;
     connect(amount->widget(), &QObject::destroyed, this, &QObject::deleteLater);
     connect(this, &AmountEditCurrencyHelper::commodityChanged, this, [&](const MyMoneySecurity& commodity) {
         Q_D(AmountEditCurrencyHelper);
@@ -85,6 +85,8 @@ void AmountEditCurrencyHelper::setCommodity(const QString& commodityId)
 void AmountEditCurrencyHelper::categoryChanged(const QString& id)
 {
     Q_D(AmountEditCurrencyHelper);
+    QString currencySymbol;
+    QString currencyName;
 
     if (!id.isEmpty()) {
         try {

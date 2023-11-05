@@ -16,7 +16,7 @@ class ConverterTest : public QObject
     Q_OBJECT
 
 private:
-    MyMoneyFile* file = nullptr;
+    MyMoneyFile* file;
 
 private Q_SLOTS:
     void init();
